@@ -6,6 +6,7 @@ import math
 import models.common as common
 import models.yolo as yolo
 from utils.autoanchor import check_anchor_order
+from utils.torch_utils import scale_img
 
 
 class ToyModel(nn.Module):
@@ -54,14 +55,15 @@ class ToyModel(nn.Module):
             self._initialize_biases()  # only run once
 
 
-    def forward(self, x):
-        print(x.shape)
-        intermediate = self.resizer(x)
-        for conv in self.module_list:
-            print(intermediate.shape)
-            intermediate = conv(intermediate)
-        print(intermediate.shape)
-        return self.yolo_head([intermediate])
+    def forward(self, x, augment=False, profile=False):
+        # ignore profile keyword for now
+        if augment:
+            return self.forward_augment(x)
+        else:
+            intermediate = self.resizer(x)
+            for conv in self.module_list:
+                intermediate = conv(intermediate)
+            return self.yolo_head([intermediate])
 
     # needed for compatibility reasons
     def _initialize_biases(self, cf=None):  # initialize biases into Detect(), cf is class frequency
@@ -74,12 +76,38 @@ class ToyModel(nn.Module):
             b.data[:, 5:] += math.log(0.6 / (m.nc - 0.99)) if cf is None else torch.log(cf / cf.sum())  # cls
             mi.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
 
+    def forward_augment(self, x):
+        img_size = x.shape[-2:]  # height, width
+        s = [1, 0.83, 0.67]  # scales
+        f = [None, 3, None]  # flips (2-ud, 3-lr)
+        y = []  # outputs
+        for si, fi in zip(s, f):
+            xi = scale_img(x.flip(fi) if fi else x, si, gs=int(self.stride.max()))
+            yi = self.forward(xi, augment=False)[0]  # forward
+            # cv2.imwrite(f'img_{si}.jpg', 255 * xi[0].cpu().numpy().transpose((1, 2, 0))[:, :, ::-1])  # save
+            yi = self._descale_pred(yi, fi, si, img_size)
+            y.append(yi)
+        return torch.cat(y, 1), None  # augmented inference, train
+
+    def _descale_pred(self, p, flips, scale, img_size):
+        # de-scale predictions following augmented inference (inverse operation)
+        if self.inplace:
+            p[..., :4] /= scale  # de-scale
+            if flips == 2:
+                p[..., 1] = img_size[0] - p[..., 1]  # de-flip ud
+            elif flips == 3:
+                p[..., 0] = img_size[1] - p[..., 0]  # de-flip lr
+        else:
+            x, y, wh = p[..., 0:1] / scale, p[..., 1:2] / scale, p[..., 2:4] / scale  # de-scale
+            if flips == 2:
+                y = img_size[0] - y  # de-flip ud
+            elif flips == 3:
+                x = img_size[1] - x  # de-flip lr
+            p = torch.cat((x, y, wh, p[..., 4:]), -1)
+        return p
+
 def init_toy_model(opt, hyp, nc) -> nn.Module:
     """
     This is simply a test to see if I can get an arbitrary model to work with the training code
     """
-    print("\n\n\n")
-    print(hyp)
-    print("\n\n\n")
-
     return ToyModel(hyp.get('anchors'), nc).to()
