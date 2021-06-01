@@ -122,8 +122,13 @@ def test(data,
         if modal_stage_model is not None:
             with torch.no_grad():
                 img_shape = (img.shape[2], img.shape[3])
-                boxes, _ = modal_stage_model.forward(img)
+                if half:
+                    img_float = img.clone().float()
+                    boxes, _ = modal_stage_model.forward(img_float)
+                else:
+                    boxes, _ = modal_stage_model.forward(img)
                 pixel_map = predicted_bboxes_to_pixel_map(boxes, img_shape)
+                pixel_map = pixel_map.half() if half else pixel_map
                 img = torch.cat([img, pixel_map], dim=1)
 
         targets = targets.to(device)

@@ -80,6 +80,7 @@ def predicted_bboxes_to_pixel_map(boxes: torch.Tensor, img_shape: Tuple[int, int
         Higher values are more accurate but slower.
     :return: A Tensor of pixel values between 0 and 1. Its shape will be [batch_size, nc, img_shape[0], img_shape[1]]
     """
+    device = boxes.device
 
     batch_size, num_boxes, nc = boxes.shape
     nc -= 5  # there are five more entries than the number of classes in the last dim of 'predictions'
@@ -88,10 +89,9 @@ def predicted_bboxes_to_pixel_map(boxes: torch.Tensor, img_shape: Tuple[int, int
     max_height_px = img_shape[1]
 
     # pruning step: sort boxes by objness, then prune all but the 'keep_top_n_boxes' most 'object-y' boxes for each image in the batch
-    boxes = sort_by_objectness(boxes)
-    boxes = boxes[:, :keep_top_n_boxes, :]
+    boxes = topn_by_objectness(boxes, keep_top_n_boxes).to(device)
 
-    pixel_bounds = torch.zeros((boxes.shape[0], boxes.shape[1], 7)).to(boxes.device)  # class_conf, objness, hleft, hright, vtop, vbottom, class_idx
+    pixel_bounds = torch.zeros((boxes.shape[0], boxes.shape[1], 7)).to(device)  # class_conf, objness, hleft, hright, vtop, vbottom, class_idx
 
     # transfer over class, objectness information
     pixel_bounds[:, :, 0], pixel_bounds[:, :, 6] = torch.max(boxes[:, :, 5:], dim=2)
@@ -116,9 +116,9 @@ def predicted_bboxes_to_pixel_map(boxes: torch.Tensor, img_shape: Tuple[int, int
 
     torch.clamp(pixel_bounds[:, :, 2:4], 0, max_width_px - 1)
     torch.clamp(pixel_bounds[:, :, 4:6], 0, max_height_px - 1)
-    pixel_bounds_int_parts = pixel_bounds[:, :, 2:].clone().to(boxes.device).long()  # TODO: keep int_parts in separate tensor the whole time?
+    pixel_bounds_int_parts = pixel_bounds[:, :, 2:].clone().to(device).long()  # TODO: keep int_parts in separate tensor the whole time?
 
-    output = torch.zeros((batch_size, nc, max_width_px, max_height_px)).to(boxes.device)
+    output = torch.zeros((batch_size, nc, max_width_px, max_height_px)).to(device)
 
     # TODO: consider a vectorized alternative (it uses a lot of memory, but maybe duplicating 'output' once for each box and then doing torch.max over it would work? This takes memory:
     for img_idx in range(pixel_bounds.shape[0]):
@@ -145,6 +145,14 @@ def predicted_bboxes_to_pixel_map(boxes: torch.Tensor, img_shape: Tuple[int, int
 
 def sort_by_objectness(boxes: torch.Tensor):
     _, sorted_indices = torch.sort(boxes[:, :, 4].view(boxes.shape[0], boxes.shape[1]), dim=1, descending=True)
+    boxes_t = boxes.permute(0, 2, 1)
+    indices_t = sorted_indices.unsqueeze(-1).repeat(1, 1, 7).permute(0, 2, 1)
+    sorted_boxes_t = torch.gather(boxes_t, 2, indices_t)
+    return sorted_boxes_t.permute(0, 2, 1)
+
+
+def topn_by_objectness(boxes: torch.Tensor, k: int):
+    _, sorted_indices = torch.topk(boxes[:, :, 4].view(boxes.shape[0], boxes.shape[1]), k, dim=1, sorted=False, largest=True)
     boxes_t = boxes.permute(0, 2, 1)
     indices_t = sorted_indices.unsqueeze(-1).repeat(1, 1, 7).permute(0, 2, 1)
     sorted_boxes_t = torch.gather(boxes_t, 2, indices_t)
