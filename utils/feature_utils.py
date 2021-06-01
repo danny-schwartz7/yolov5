@@ -2,7 +2,7 @@ import torch
 from typing import Tuple
 
 
-DEFAULT_BOX_LIMIT = 300
+DEFAULT_BOX_LIMIT = 250
 
 
 def ground_truth_boxes_to_pixel_map(nc: int, batch_size: int, boxes: torch.Tensor, img_shape: Tuple[int, int]) -> torch.Tensor:
@@ -88,57 +88,92 @@ def predicted_bboxes_to_pixel_map(boxes: torch.Tensor, img_shape: Tuple[int, int
     max_width_px = img_shape[0]
     max_height_px = img_shape[1]
 
-    # pruning step: sort boxes by objness, then prune all but the 'keep_top_n_boxes' most 'object-y' boxes for each image in the batch
-    boxes = topn_by_objectness(boxes, keep_top_n_boxes).to(device)
+    """
+    pruning step: sort boxes by objness, then prune all but the 'keep_top_n_boxes' most 'object-y' boxes
+    for each image in the batch
+    """
+    boxes = topn_by_objectness(boxes, keep_top_n_boxes, nc).to(device)
 
-    pixel_bounds = torch.zeros((boxes.shape[0], boxes.shape[1], 7)).to(device)  # class_conf, objness, hleft, hright, vtop, vbottom, class_idx
+    pixel_bounds = torch.zeros((boxes.shape[0], boxes.shape[1], 4)).to(device)  # hleft, hright, vtop, vbottom
 
-    # transfer over class, objectness information
-    pixel_bounds[:, :, 0], pixel_bounds[:, :, 6] = torch.max(boxes[:, :, 5:], dim=2)
-    # The above statement is a more efficient way to do:
-    # pixel_bounds[:, :, 6] = torch.argmax(boxes[:, :, 5:], dim=2)
-    # pixel_bounds[:, :, 0], _ = torch.max(boxes[:, :, 5:], dim=2)
-
-    pixel_bounds[:, :, 1] = boxes[:, :, 4]  # objectness
+    objectness = boxes[:, :, 4]  # objectness
+    objectness = objectness.to(device)
 
     # the following pixel boundaries are inclusive
     # horiz left bound
-    pixel_bounds[:, :, 2] = torch.floor(max_width_px*(boxes[:, :, 0] - boxes[:, :, 2]/2))
+    pixel_bounds[:, :, 0] = torch.floor(max_width_px*(boxes[:, :, 0] - boxes[:, :, 2]/2))
 
     # horiz right bound
-    pixel_bounds[:, :, 3] = torch.floor(max_width_px*(boxes[:, :, 0] + boxes[:, :, 2]/2))
+    pixel_bounds[:, :, 1] = torch.floor(max_width_px*(boxes[:, :, 0] + boxes[:, :, 2]/2))
 
     # vert top bound
-    pixel_bounds[:, :, 4] = torch.floor(max_height_px*(boxes[:, :, 1] - boxes[:, :, 3]/2))
+    pixel_bounds[:, :, 2] = torch.floor(max_height_px*(boxes[:, :, 1] - boxes[:, :, 3]/2))
 
     # vert bottom bound
-    pixel_bounds[:, :, 5] = torch.floor(max_height_px * (boxes[:, :, 1] + boxes[:, :, 3]/2))
+    pixel_bounds[:, :, 3] = torch.floor(max_height_px * (boxes[:, :, 1] + boxes[:, :, 3]/2))
 
-    torch.clamp(pixel_bounds[:, :, 2:4], 0, max_width_px - 1)
-    torch.clamp(pixel_bounds[:, :, 4:6], 0, max_height_px - 1)
-    pixel_bounds_int_parts = pixel_bounds[:, :, 2:].clone().to(device).long()  # TODO: keep int_parts in separate tensor the whole time?
+    torch.clamp(pixel_bounds[:, :, 0:2], 0, max_width_px - 1)
+    torch.clamp(pixel_bounds[:, :, 2:4], 0, max_height_px - 1)
+    pixel_bounds = pixel_bounds.to(device).long()
 
-    output = torch.zeros((batch_size, nc, max_width_px, max_height_px)).to(device)
+    horiz_left_bound = pixel_bounds[:, :, 0]
+    horiz_left_bound = horiz_left_bound.to(device)
+    horiz_right_bound = pixel_bounds[:, :, 1] + 1
+    horiz_right_bound = horiz_right_bound.to(device)
+    vert_top_bound = pixel_bounds[:, :, 2]
+    vert_top_bound = vert_top_bound.to(device)
+    vert_bottom_bound = pixel_bounds[:, :, 3] + 1
+    vert_bottom_bound = vert_bottom_bound.to(device)
 
-    # TODO: consider a vectorized alternative (it uses a lot of memory, but maybe duplicating 'output' once for each box and then doing torch.max over it would work? This takes memory:
-    for img_idx in range(pixel_bounds.shape[0]):
-        for i in range(pixel_bounds.shape[1]):
-            class_idx = pixel_bounds_int_parts[img_idx, i, 4]
-            horiz_left_bound = pixel_bounds_int_parts[img_idx, i, 0]
+    # confidence score in a certain class is the product of objectness and class score for that class
+    confidence = objectness.unsqueeze(-1) * boxes[:, :, 5:]
+    confidence = confidence.to(device)
 
-            """
-            This bound is *inclusive* but torch indexing treats it as exclusive, so we add 1.
-            We do the same for 'vert_bottom_bound'.
-            """
-            horiz_right_bound = pixel_bounds_int_parts[img_idx, i, 1] + 1
-            vert_top_bound = pixel_bounds_int_parts[img_idx, i, 2]
-            vert_bottom_bound = pixel_bounds_int_parts[img_idx, i, 3] + 1
+    # compute a 'horizontal masks' tensor of shape (batch_size, num_kept_boxes, max_width_px)
+    horiz_arange = torch.arange(max_width_px).view(1, 1, -1)  # necessary for vectorized mask computation
+    horiz_arange = horiz_arange.to(device)
+    horiz_left_bound = horiz_left_bound.unsqueeze(-1).expand(horiz_left_bound.shape[0], horiz_left_bound.shape[1], max_width_px)
+    horiz_right_bound = horiz_right_bound.unsqueeze(-1).expand(horiz_right_bound.shape[0], horiz_right_bound.shape[1], max_width_px)
 
-            confidence = pixel_bounds[img_idx, i, 0] * pixel_bounds[img_idx, i, 1]  # TODO: apply negative log here? This is an arch choice that could make this easier to learn
+    ones = torch.ones((1, 1, 1)).to(device).expand(horiz_left_bound.shape)
+    zeros = torch.zeros((1, 1, 1)).to(device).expand(horiz_left_bound.shape)
 
-            output[img_idx, class_idx, horiz_left_bound:horiz_right_bound, vert_top_bound:vert_bottom_bound] = torch.max(output[img_idx, class_idx, horiz_left_bound:horiz_right_bound, vert_top_bound:vert_bottom_bound], confidence)
+    horiz_masks = torch.where(horiz_left_bound <= horiz_arange, ones, zeros).to(device) * torch.where(horiz_arange <= horiz_right_bound, ones, zeros).to(device)
+    horiz_masks = horiz_masks.to(device)
 
-    # TODO: add 'objectness' channel?
+    # compute a 'vertical masks' tensor of shape (batch_size, num_kept_boxes, max_height_px)
+    vert_arange = torch.arange(max_height_px).view(1, 1, -1)  # necessary for vectorized mask computation
+    vert_arange = vert_arange.to(device)
+    vert_top_bound = vert_top_bound.unsqueeze(-1).expand(vert_top_bound.shape[0], vert_top_bound.shape[1], max_height_px)
+    vert_bottom_bound = vert_bottom_bound.unsqueeze(-1).expand(vert_bottom_bound.shape[0], vert_bottom_bound.shape[1], max_height_px)
+
+    ones = torch.ones((1, 1, 1)).to(device).expand(vert_top_bound.shape)
+    zeros = torch.zeros((1, 1, 1)).to(device).expand(vert_top_bound.shape)
+
+    vert_masks = torch.where(vert_top_bound <= vert_arange, ones, zeros).to(device) * torch.where(vert_arange <= vert_bottom_bound, ones, zeros).to(device)
+    vert_masks = vert_masks.to(device)
+
+    """
+    reshape masks to get ready for batched matrix multiply (this will result in the tensor we want
+    of shape (batch_size, num_kept_boxes, max_width_px, max_height_px)
+    """
+    vert_masks = vert_masks.unsqueeze(-1).permute(0, 1, 3, 2)
+    horiz_masks = horiz_masks.unsqueeze(-1)
+
+    # use batched matrix multiplication to compute masks
+    confidence_masks = torch.matmul(horiz_masks, vert_masks).unsqueeze(2).expand(batch_size, boxes.shape[1], nc, max_width_px, max_height_px)
+    confidence_masks = confidence_masks.to(device)
+
+    # use 'expand' and 'unsqueeze' to avoid nasty broadcasting
+    confidence = confidence.unsqueeze(-1).unsqueeze(-1).expand(confidence_masks.shape)
+
+    # compute per-box pixel values
+    per_box_output = confidence_masks * confidence
+    per_box_output = per_box_output.to(device)
+
+    # compute max among pixel values for each image in the batch, class, x position, and y position
+    output, _ = torch.max(per_box_output, dim=1)
+    output = output.to(device)
 
     return output
 
@@ -151,20 +186,21 @@ def sort_by_objectness(boxes: torch.Tensor):
     return sorted_boxes_t.permute(0, 2, 1)
 
 
-def topn_by_objectness(boxes: torch.Tensor, k: int):
+def topn_by_objectness(boxes: torch.Tensor, k: int, nc: int):
+    k = min(k, boxes.shape[1])  # not likely to happen in practice, but nice for testing and harmless
     _, sorted_indices = torch.topk(boxes[:, :, 4].view(boxes.shape[0], boxes.shape[1]), k, dim=1, sorted=False, largest=True)
     boxes_t = boxes.permute(0, 2, 1)
-    indices_t = sorted_indices.unsqueeze(-1).repeat(1, 1, 7).permute(0, 2, 1)
+    indices_t = sorted_indices.unsqueeze(-1).repeat(1, 1, 5 + nc).permute(0, 2, 1)
     sorted_boxes_t = torch.gather(boxes_t, 2, indices_t)
     return sorted_boxes_t.permute(0, 2, 1)
 
 
 def test_pixel_map():
-    boxes = torch.rand(size=(1, 48, 7))*(2/3)
+    boxes = torch.rand(size=(2, 48, 7))*(2/3)
     boxes[0, 0, :] = torch.Tensor([0.5, 0.5, 0.5, 0.5, 1, 1, 0])  # class 0 has a square in the center of its map
     boxes[0, 1, :] = torch.Tensor([0.5, 0.5, 0.5, 0.5, 1, 0, 1])  # class 1 has a square in the center of its map
-    boxes[0, 2, :] = torch.Tensor([0.25, 0.25, 0.5, 0.5, 1, 0.8, 0])  # class 0 has a square in the upper-left of its map
-    boxes[0, 3, :] = torch.Tensor([0.75, 0.75, 0.5, 0.5, 1, 0, 1])  # class 1 has a square in the bottom-right of its map
+    boxes[1, 2, :] = torch.Tensor([0.25, 0.25, 0.5, 0.5, 1, 0.7, 0])  # class 0 has a square in the upper-left of its map
+    boxes[1, 3, :] = torch.Tensor([0.75, 0.75, 0.5, 0.5, 1, 0, 0.8])  # class 1 has a square in the bottom-right of its map
     outputs = predicted_bboxes_to_pixel_map(boxes, (8, 8))
     return outputs
 
