@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 from threading import Thread
+from typing import Optional
 
 import numpy as np
 import torch
@@ -10,12 +11,14 @@ import yaml
 from tqdm import tqdm
 
 from models.experimental import attempt_load
+from models.yolo import Model
 from utils.datasets import create_dataloader
 from utils.general import coco80_to_coco91_class, check_dataset, check_file, check_img_size, check_requirements, \
     box_iou, non_max_suppression, scale_coords, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr
 from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import plot_images, output_to_target, plot_study_txt
 from utils.torch_utils import select_device, time_synchronized
+from utils.feature_utils import predicted_bboxes_to_pixel_map
 
 
 def test(data,
@@ -39,7 +42,8 @@ def test(data,
          compute_loss=None,
          half_precision=True,
          is_coco=False,
-         opt=None):
+         opt=None,
+         modal_stage_model: Optional[Model] = None):
     # Initialize/load model and set device
     training = model is not None
     if training:  # called by train.py
@@ -85,7 +89,11 @@ def test(data,
     # Dataloader
     if not training:
         if device.type != 'cpu':
-            model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+            if modal_stage_model is not None:
+                input_ch = 3 + nc
+            else:
+                input_ch = 3
+            model(torch.zeros(1, input_ch, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
         task = opt.task if opt.task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
         dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, pad=0.5, rect=True,
                                        prefix=colorstr(f'{task}: '))[0]
@@ -110,6 +118,13 @@ def test(data,
         # TODO: change this logic when ready!
         if isinstance(targets, dict):
             targets = targets['amodal']
+
+        if modal_stage_model is not None:
+            with torch.no_grad():
+                img_shape = (img.shape[2], img.shape[3])
+                boxes, _ = modal_stage_model.forward(img)
+                pixel_map = predicted_bboxes_to_pixel_map(boxes, img_shape)
+                img = torch.cat([img, pixel_map], dim=1)
 
         targets = targets.to(device)
         nb, _, height, width = img.shape  # batch size, channels, height, width
@@ -143,6 +158,9 @@ def test(data,
                 if nl:
                     stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
                 continue
+
+            # trim extra inputs off of 'img'
+            img = img[:, :3, :, :]
 
             # Predictions
             if single_cls:
@@ -319,12 +337,24 @@ if __name__ == '__main__':
     # custom
     parser.add_argument('--label-suffix', type=str, default='',
                         help='a suffix of interest to append to the target label path. Can be useful to avoid rearranging data.')
+    parser.add_argument('--modal-stage-model', type=str,
+                        help="a path to the modal stage model to use. Specify this only if training the second stage.")
 
     opt = parser.parse_args()
     opt.save_json |= opt.data.endswith('coco.yaml')
     opt.data = check_file(opt.data)  # check file
     print(opt)
     check_requirements(exclude=('tensorboard', 'pycocotools', 'thop'))
+
+    modal_stage_model = None
+    if opt.modal_stage_model is not None and opt.modal_stage_model != "":
+        modal_stage_model = None
+        if opt.modal_stage_model != "":
+            device = select_device(opt.device, batch_size=opt.batch_size)
+            modal_ckpt = torch.load(opt.modal_stage_model, map_location=device)
+            nc = modal_ckpt['model'].yaml['nc']
+            modal_stage_model = Model(modal_ckpt['model'].yaml, ch=3, nc=nc).to(device)
+            modal_stage_model.eval()
 
     if opt.task in ('train', 'val', 'test'):  # run normally
         test(opt.data,
@@ -340,12 +370,13 @@ if __name__ == '__main__':
              save_txt=opt.save_txt | opt.save_hybrid,
              save_hybrid=opt.save_hybrid,
              save_conf=opt.save_conf,
-             opt=opt
+             opt=opt,
+             modal_stage_model=modal_stage_model
              )
 
     elif opt.task == 'speed':  # speed benchmarks
         for w in opt.weights:
-            test(opt.data, w, opt.batch_size, opt.img_size, 0.25, 0.45, save_json=False, plots=False, opt=opt)
+            test(opt.data, w, opt.batch_size, opt.img_size, 0.25, 0.45, save_json=False, plots=False, opt=opt, modal_stage_model=modal_stage_model)
 
     elif opt.task == 'study':  # run over a range of settings and save/plot
         # python test.py --task study --data coco.yaml --iou 0.7 --weights yolov5s.pt yolov5m.pt yolov5l.pt yolov5x.pt
@@ -356,7 +387,7 @@ if __name__ == '__main__':
             for i in x:  # img-size
                 print(f'\nRunning {f} point {i}...')
                 r, _, t = test(opt.data, w, opt.batch_size, i, opt.conf_thres, opt.iou_thres, opt.save_json,
-                               plots=False, opt=opt)
+                               plots=False, opt=opt, modal_stage_model=modal_stage_model)
                 y.append(r + t)  # results and times
             np.savetxt(f, y, fmt='%10.4g')  # save
         os.system('zip -r study.zip study_*.txt')

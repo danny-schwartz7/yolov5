@@ -34,6 +34,7 @@ from utils.loss import ComputeLoss
 from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
+from utils.feature_utils import predicted_bboxes_to_pixel_map
 
 
 MASTER_VAL_NAME = "master_val"
@@ -83,20 +84,31 @@ def train(hyp, opt, device, tb_writer=None):
     names = ['item'] if opt.single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
     assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
 
+    # modal stage model
+    modal_stage_model = None
+    if opt.modal_stage_model is not None and opt.modal_stage_model != "":
+        modal_ckpt = torch.load(opt.modal_stage_model, map_location=device)
+        modal_stage_model = Model(modal_ckpt['model'].yaml, ch=3, nc=nc).to(device)
+        modal_stage_model.eval()
+
     # Model
+    if modal_stage_model is not None:
+        input_ch = 3 + nc
+    else:
+        input_ch = 3
     pretrained = weights.endswith('.pt')
     if pretrained:
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
-        model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        model = Model(opt.cfg or ckpt['model'].yaml, ch=input_ch, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
         exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) and not opt.resume else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(state_dict, strict=False)  # load
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
-        model = Model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        model = Model(opt.cfg, ch=input_ch, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
     train_path = data_dict['train']
@@ -319,6 +331,14 @@ def train(hyp, opt, device, tb_writer=None):
             if isinstance(targets, dict):
                 targets = targets['amodal']
 
+            if modal_stage_model is not None:
+                with torch.no_grad():
+                    img_shape = (imgs.shape[2], imgs.shape[3])
+                    boxes, _ = modal_stage_model.forward(imgs)
+                    pixel_map = predicted_bboxes_to_pixel_map(boxes, img_shape)
+                    imgs = torch.cat([imgs, pixel_map], dim=1)
+
+
             # Warmup
             if ni <= nw:
                 xi = [0, nw]  # x interp
@@ -416,7 +436,8 @@ def train(hyp, opt, device, tb_writer=None):
                                                      plots=plots and final_epoch,
                                                      wandb_logger=wandb_logger,
                                                      compute_loss=compute_loss,
-                                                     is_coco=is_coco)
+                                                     is_coco=is_coco,
+                                                     modal_stage_model=modal_stage_model)
                     if val_loader_name != MASTER_VAL_NAME:
                         # Log tbx metrics for all non-master validation sets
                         tbx_tags = ['precision', 'recall', 'mAP_0.5', 'mAP_0.5:0.95',
@@ -502,7 +523,8 @@ def train(hyp, opt, device, tb_writer=None):
                                           save_dir=save_dir,
                                           save_json=True,
                                           plots=False,
-                                          is_coco=is_coco)
+                                          is_coco=is_coco,
+                                          modal_stage_model=modal_stage_model)
 
         # Strip optimizers
         final = best if best.exists() else last  # final model
@@ -570,6 +592,8 @@ if __name__ == '__main__':
     """
     parser.add_argument('--label-suffix', type=str, default='',
                         help='a suffix of interest to append to the target label path. Can be useful to avoid rearranging data.')
+    parser.add_argument('--modal-stage-model', type=str, help="a path to the modal stage model to use. Specify this only if training the second stage.")
+
     opt = parser.parse_args()
 
     # Set DDP variables
