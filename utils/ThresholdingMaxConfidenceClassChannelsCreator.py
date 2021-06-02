@@ -1,16 +1,16 @@
 import logging
 import torch
-import ClassChannelsCreator
+import utils.ClassChannelsCreator
 from typing import Tuple
 
-class ThresholdingMaxConfidenceClassChannelsCreator(ClassChannelsCreator.ClassChannelsCreator):
+class ThresholdingMaxConfidenceClassChannelsCreator(utils.ClassChannelsCreator.ClassChannelsCreator):
     def  __init__(self, threshold: float = 0.5) -> None:
         super().__init__()
         assert threshold >= 0 and threshold <= 1, "threshold should be between 0 and 1"
         self.threshold = threshold 
 
     def predicted_bboxes_to_pixel_map(self, boxes: torch.Tensor, img_shape: Tuple[int, int],
-                                      keep_top_n_boxes: int = ClassChannelsCreator.DEFAULT_BOX_LIMIT) -> torch.Tensor:
+                                      keep_top_n_boxes: int = utils.ClassChannelsCreator.DEFAULT_BOX_LIMIT) -> torch.Tensor:
         """
         Converts a tensor of bounding box information for a minibatch of examples into a pixel map for each class.
         Each class' pixel map has the highest confidence value of any box containing that pixel. The confidence value is
@@ -80,10 +80,6 @@ class ThresholdingMaxConfidenceClassChannelsCreator(ClassChannelsCreator.ClassCh
         for imageIndex in range(numImagesInBatch):
             for boxTopKIndex in range(numBoxesToPick):
                 boxIndex = boxesIndicesObjectnessGreaterThanThreshold[imageIndex, boxTopKIndex]
-                if boxesIndicesObjectnessGreaterThanThreshold[imageIndex, boxIndex] == False:
-                    logger.error("We should not have hit this condition")
-                    continue
-
                 countBoxesWhoseObjectnessIsGreaterThanThreshold += 1
                 class_idx = pixel_bounds_int_parts[imageIndex, boxIndex, 4]
                 horiz_left_bound = pixel_bounds_int_parts[imageIndex, boxIndex, 0]

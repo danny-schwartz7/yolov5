@@ -2,8 +2,8 @@ import logging
 import torch
 from abc import ABC, abstractmethod
 from typing import Tuple
-from ClassChannelsCreator import ClassChannelsCreator
-from ThresholdingMaxConfidenceClassChannelsCreator import ThresholdingMaxConfidenceClassChannelsCreator
+from utils.ClassChannelsCreator import ClassChannelsCreator
+from utils.ThresholdingMaxConfidenceClassChannelsCreator import ThresholdingMaxConfidenceClassChannelsCreator
 
 def create_class_channels_creator(option: str) -> ClassChannelsCreator:
     logger = logging.getLogger(__name__)
