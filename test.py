@@ -18,7 +18,7 @@ from utils.general import coco80_to_coco91_class, check_dataset, check_file, che
 from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import plot_images, output_to_target, plot_study_txt
 from utils.torch_utils import select_device, time_synchronized, intersect_dicts
-from utils.feature_utils import predicted_bboxes_to_pixel_map
+from utils.feature_utils import predicted_bboxes_to_pixel_map, ground_truth_boxes_to_pixel_map
 
 
 def test(data,
@@ -43,7 +43,8 @@ def test(data,
          half_precision=False,
          is_coco=False,
          opt=None,
-         modal_stage_model: Optional[Model] = None):
+         modal_stage_model: Optional[Model] = None,
+         use_ground_truth_modal_labels: bool = False):
     # Initialize/load model and set device
     training = model is not None
     if training:  # called by train.py
@@ -89,7 +90,7 @@ def test(data,
     # Dataloader
     if not training:
         if device.type != 'cpu':
-            if modal_stage_model is not None:
+            if modal_stage_model is not None or use_ground_truth_modal_labels:
                 input_ch = 3 + nc
             else:
                 input_ch = 3
@@ -111,14 +112,6 @@ def test(data,
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
 
-        """
-        In the modal/amodal use case, 'targets' is a dictionary of tensors, so you should choose
-        targets['modal'] or targets['amodal'] depending on your needs.
-        """
-        # TODO: change this logic when ready!
-        if isinstance(targets, dict):
-            targets = targets['amodal']
-
         if modal_stage_model is not None:
             with torch.no_grad():
                 img_shape = (img.shape[2], img.shape[3])
@@ -130,6 +123,20 @@ def test(data,
                 pixel_map = predicted_bboxes_to_pixel_map(boxes, img_shape)
                 pixel_map = pixel_map.half() if half else pixel_map
                 img = torch.cat([img, pixel_map], dim=1)
+        elif use_ground_truth_modal_labels:
+            with torch.no_grad():
+                img_shape = (img.shape[2], img.shape[3])
+                imgs_in_batch = img.shape[0]
+                pixel_map = ground_truth_boxes_to_pixel_map(nc, imgs_in_batch, targets['modal'].to(device), img_shape)
+                img = torch.cat([img, pixel_map], dim=1)
+
+        """
+        In the modal/amodal use case, 'targets' is a dictionary of tensors, so you should choose
+        targets['modal'] or targets['amodal'] depending on your needs.
+        """
+        # TODO: change this logic when ready!
+        if isinstance(targets, dict):
+            targets = targets['amodal']
 
         targets = targets.to(device)
         nb, _, height, width = img.shape  # batch size, channels, height, width
@@ -344,6 +351,8 @@ if __name__ == '__main__':
                         help='a suffix of interest to append to the target label path. Can be useful to avoid rearranging data.')
     parser.add_argument('--modal-stage-model', type=str,
                         help="a path to the modal stage model to use. Specify this only if training the second stage.")
+    parser.add_argument('--use-ground-truth-modal-labels', action='store_true',
+                        help="specify this to test an amodal model that receives a pixel map of inputs corresponding to the ground truth modal labels.")
 
     opt = parser.parse_args()
     opt.save_json |= opt.data.endswith('coco.yaml')
@@ -379,12 +388,14 @@ if __name__ == '__main__':
              save_hybrid=opt.save_hybrid,
              save_conf=opt.save_conf,
              opt=opt,
-             modal_stage_model=modal_stage_model
+             modal_stage_model=modal_stage_model,
+             use_ground_truth_modal_labels=opt.use_ground_truth_modal_labels
              )
 
     elif opt.task == 'speed':  # speed benchmarks
         for w in opt.weights:
-            test(opt.data, w, opt.batch_size, opt.img_size, 0.25, 0.45, save_json=False, plots=False, opt=opt, modal_stage_model=modal_stage_model)
+            test(opt.data, w, opt.batch_size, opt.img_size, 0.25, 0.45, save_json=False, plots=False, opt=opt, modal_stage_model=modal_stage_model,
+                 use_ground_truth_modal_labels=opt.use_ground_truth_modal_labels)
 
     elif opt.task == 'study':  # run over a range of settings and save/plot
         # python test.py --task study --data coco.yaml --iou 0.7 --weights yolov5s.pt yolov5m.pt yolov5l.pt yolov5x.pt
@@ -395,7 +406,8 @@ if __name__ == '__main__':
             for i in x:  # img-size
                 print(f'\nRunning {f} point {i}...')
                 r, _, t = test(opt.data, w, opt.batch_size, i, opt.conf_thres, opt.iou_thres, opt.save_json,
-                               plots=False, opt=opt, modal_stage_model=modal_stage_model)
+                               plots=False, opt=opt, modal_stage_model=modal_stage_model,
+                               use_ground_truth_modal_labels=opt.use_ground_truth_modal_labels)
                 y.append(r + t)  # results and times
             np.savetxt(f, y, fmt='%10.4g')  # save
         os.system('zip -r study.zip study_*.txt')

@@ -34,8 +34,7 @@ from utils.loss import ComputeLoss
 from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
-from utils.feature_utils import predicted_bboxes_to_pixel_map
-
+from utils.feature_utils import predicted_bboxes_to_pixel_map, ground_truth_boxes_to_pixel_map
 
 MASTER_VAL_NAME = "master_val"
 
@@ -96,7 +95,7 @@ def train(hyp, opt, device, tb_writer=None):
         modal_stage_model.eval()
 
     # Model
-    if modal_stage_model is not None:
+    if modal_stage_model is not None or opt.use_ground_truth_modal_labels:
         input_ch = 3 + nc
     else:
         input_ch = 3
@@ -327,6 +326,19 @@ def train(hyp, opt, device, tb_writer=None):
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
 
+            if modal_stage_model is not None:
+                with torch.no_grad():
+                    img_shape = (imgs.shape[2], imgs.shape[3])
+                    boxes, _ = modal_stage_model.forward(imgs)
+                    pixel_map = predicted_bboxes_to_pixel_map(boxes, img_shape)
+                    imgs = torch.cat([imgs, pixel_map], dim=1)
+            elif opt.use_ground_truth_modal_labels:
+                with torch.no_grad():
+                    img_shape = (imgs.shape[2], imgs.shape[3])
+                    imgs_in_batch = imgs.shape[0]
+                    pixel_map = ground_truth_boxes_to_pixel_map(nc, imgs_in_batch, targets['modal'][:imgs_in_batch, :].to(device), img_shape)
+                    imgs = torch.cat([imgs, pixel_map], dim=1)
+
             """
             In the modal/amodal use case, 'targets' is a dictionary of tensors, so you should choose
             targets['modal'] or targets['amodal'] depending on your needs.
@@ -334,13 +346,6 @@ def train(hyp, opt, device, tb_writer=None):
             # TODO: change this logic when ready!
             if isinstance(targets, dict):
                 targets = targets['amodal']
-
-            if modal_stage_model is not None:
-                with torch.no_grad():
-                    img_shape = (imgs.shape[2], imgs.shape[3])
-                    boxes, _ = modal_stage_model.forward(imgs)
-                    pixel_map = predicted_bboxes_to_pixel_map(boxes, img_shape)
-                    imgs = torch.cat([imgs, pixel_map], dim=1)
 
 
             # Warmup
@@ -441,7 +446,8 @@ def train(hyp, opt, device, tb_writer=None):
                                                      wandb_logger=wandb_logger,
                                                      compute_loss=compute_loss,
                                                      is_coco=is_coco,
-                                                     modal_stage_model=modal_stage_model)
+                                                     modal_stage_model=modal_stage_model,
+                                                     use_ground_truth_modal_labels=opt.use_ground_truth_modal_labels)
                     if val_loader_name != MASTER_VAL_NAME:
                         # Log tbx metrics for all non-master validation sets
                         tbx_tags = ['precision', 'recall', 'mAP_0.5', 'mAP_0.5:0.95',
@@ -528,7 +534,8 @@ def train(hyp, opt, device, tb_writer=None):
                                           save_json=True,
                                           plots=False,
                                           is_coco=is_coco,
-                                          modal_stage_model=modal_stage_model)
+                                          modal_stage_model=modal_stage_model,
+                                          use_ground_truth_modal_labels=opt.use_ground_truth_modal_labels)
 
         # Strip optimizers
         final = best if best.exists() else last  # final model
@@ -597,6 +604,8 @@ if __name__ == '__main__':
     parser.add_argument('--label-suffix', type=str, default='',
                         help='a suffix of interest to append to the target label path. Can be useful to avoid rearranging data.')
     parser.add_argument('--modal-stage-model', type=str, help="a path to the modal stage model to use. Specify this only if training the second stage.")
+    parser.add_argument('--use-ground-truth-modal-labels', action='store_true',
+                        help="specify this to train an amodal model that receives a pixel map of inputs corresponding to the ground truth modal labels.")
 
     opt = parser.parse_args()
 
