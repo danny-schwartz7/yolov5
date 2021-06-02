@@ -2,7 +2,7 @@ import torch
 from typing import Tuple
 
 
-DEFAULT_BOX_LIMIT = 250
+DEFAULT_BOX_LIMIT = 300
 
 
 def ground_truth_boxes_to_pixel_map(nc: int, batch_size: int, boxes: torch.Tensor, img_shape: Tuple[int, int]) -> torch.Tensor:
