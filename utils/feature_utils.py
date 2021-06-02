@@ -92,88 +92,92 @@ def predicted_bboxes_to_pixel_map(boxes: torch.Tensor, img_shape: Tuple[int, int
     pruning step: sort boxes by objness, then prune all but the 'keep_top_n_boxes' most 'object-y' boxes
     for each image in the batch
     """
-    boxes = topn_by_objectness(boxes, keep_top_n_boxes, nc).to(device)
+    all_boxes = topn_by_objectness(boxes, keep_top_n_boxes, nc).to(device)
 
-    pixel_bounds = torch.zeros((boxes.shape[0], boxes.shape[1], 4)).to(device)  # hleft, hright, vtop, vbottom
+    output = torch.zeros(batch_size, nc, max_width_px, max_height_px).to(device)
 
-    objectness = boxes[:, :, 4]  # objectness
-    objectness = objectness.to(device)
+    for image_idx in range(batch_size):
+        boxes = all_boxes[image_idx, :, :].unsqueeze(0).to(device)
 
-    # the following pixel boundaries are inclusive
-    # horiz left bound
-    pixel_bounds[:, :, 0] = torch.floor(max_width_px*(boxes[:, :, 0] - boxes[:, :, 2]/2))
+        pixel_bounds = torch.zeros((boxes.shape[0], boxes.shape[1], 4)).to(device)  # hleft, hright, vtop, vbottom
 
-    # horiz right bound
-    pixel_bounds[:, :, 1] = torch.floor(max_width_px*(boxes[:, :, 0] + boxes[:, :, 2]/2))
+        objectness = boxes[:, :, 4]  # objectness
+        objectness = objectness.to(device)
 
-    # vert top bound
-    pixel_bounds[:, :, 2] = torch.floor(max_height_px*(boxes[:, :, 1] - boxes[:, :, 3]/2))
+        # the following pixel boundaries are inclusive
+        # horiz left bound
+        pixel_bounds[:, :, 0] = torch.floor(max_width_px*(boxes[:, :, 0] - boxes[:, :, 2]/2))
 
-    # vert bottom bound
-    pixel_bounds[:, :, 3] = torch.floor(max_height_px * (boxes[:, :, 1] + boxes[:, :, 3]/2))
+        # horiz right bound
+        pixel_bounds[:, :, 1] = torch.floor(max_width_px*(boxes[:, :, 0] + boxes[:, :, 2]/2))
 
-    torch.clamp(pixel_bounds[:, :, 0:2], 0, max_width_px - 1)
-    torch.clamp(pixel_bounds[:, :, 2:4], 0, max_height_px - 1)
-    pixel_bounds = pixel_bounds.to(device).long()
+        # vert top bound
+        pixel_bounds[:, :, 2] = torch.floor(max_height_px*(boxes[:, :, 1] - boxes[:, :, 3]/2))
 
-    horiz_left_bound = pixel_bounds[:, :, 0]
-    horiz_left_bound = horiz_left_bound.to(device)
-    horiz_right_bound = pixel_bounds[:, :, 1] + 1
-    horiz_right_bound = horiz_right_bound.to(device)
-    vert_top_bound = pixel_bounds[:, :, 2]
-    vert_top_bound = vert_top_bound.to(device)
-    vert_bottom_bound = pixel_bounds[:, :, 3] + 1
-    vert_bottom_bound = vert_bottom_bound.to(device)
+        # vert bottom bound
+        pixel_bounds[:, :, 3] = torch.floor(max_height_px * (boxes[:, :, 1] + boxes[:, :, 3]/2))
 
-    # confidence score in a certain class is the product of objectness and class score for that class
-    confidence = objectness.unsqueeze(-1) * boxes[:, :, 5:]
-    confidence = confidence.to(device)
+        torch.clamp(pixel_bounds[:, :, 0:2], 0, max_width_px - 1)
+        torch.clamp(pixel_bounds[:, :, 2:4], 0, max_height_px - 1)
+        pixel_bounds = pixel_bounds.to(device).long()
 
-    # compute a 'horizontal masks' tensor of shape (batch_size, num_kept_boxes, max_width_px)
-    horiz_arange = torch.arange(max_width_px).view(1, 1, -1)  # necessary for vectorized mask computation
-    horiz_arange = horiz_arange.to(device)
-    horiz_left_bound = horiz_left_bound.unsqueeze(-1).expand(horiz_left_bound.shape[0], horiz_left_bound.shape[1], max_width_px)
-    horiz_right_bound = horiz_right_bound.unsqueeze(-1).expand(horiz_right_bound.shape[0], horiz_right_bound.shape[1], max_width_px)
+        horiz_left_bound = pixel_bounds[:, :, 0]
+        horiz_left_bound = horiz_left_bound.to(device)
+        horiz_right_bound = pixel_bounds[:, :, 1] + 1
+        horiz_right_bound = horiz_right_bound.to(device)
+        vert_top_bound = pixel_bounds[:, :, 2]
+        vert_top_bound = vert_top_bound.to(device)
+        vert_bottom_bound = pixel_bounds[:, :, 3] + 1
+        vert_bottom_bound = vert_bottom_bound.to(device)
 
-    ones = torch.ones((1, 1, 1)).to(device).expand(horiz_left_bound.shape)
-    zeros = torch.zeros((1, 1, 1)).to(device).expand(horiz_left_bound.shape)
+        # confidence score in a certain class is the product of objectness and class score for that class
+        confidence = objectness.unsqueeze(-1) * boxes[:, :, 5:]
+        confidence = confidence.to(device)
 
-    horiz_masks = torch.where(horiz_left_bound <= horiz_arange, ones, zeros).to(device) * torch.where(horiz_arange <= horiz_right_bound, ones, zeros).to(device)
-    horiz_masks = horiz_masks.to(device)
+        # compute a 'horizontal masks' tensor of shape (batch_size, num_kept_boxes, max_width_px)
+        horiz_arange = torch.arange(max_width_px).view(1, 1, -1)  # necessary for vectorized mask computation
+        horiz_arange = horiz_arange.to(device)
+        horiz_left_bound = horiz_left_bound.unsqueeze(-1).expand(horiz_left_bound.shape[0], horiz_left_bound.shape[1], max_width_px)
+        horiz_right_bound = horiz_right_bound.unsqueeze(-1).expand(horiz_right_bound.shape[0], horiz_right_bound.shape[1], max_width_px)
 
-    # compute a 'vertical masks' tensor of shape (batch_size, num_kept_boxes, max_height_px)
-    vert_arange = torch.arange(max_height_px).view(1, 1, -1)  # necessary for vectorized mask computation
-    vert_arange = vert_arange.to(device)
-    vert_top_bound = vert_top_bound.unsqueeze(-1).expand(vert_top_bound.shape[0], vert_top_bound.shape[1], max_height_px)
-    vert_bottom_bound = vert_bottom_bound.unsqueeze(-1).expand(vert_bottom_bound.shape[0], vert_bottom_bound.shape[1], max_height_px)
+        ones = torch.ones((1, 1, 1)).to(device).expand(horiz_left_bound.shape)
+        zeros = torch.zeros((1, 1, 1)).to(device).expand(horiz_left_bound.shape)
 
-    ones = torch.ones((1, 1, 1)).to(device).expand(vert_top_bound.shape)
-    zeros = torch.zeros((1, 1, 1)).to(device).expand(vert_top_bound.shape)
+        horiz_masks = torch.where(horiz_left_bound <= horiz_arange, ones, zeros).to(device) * torch.where(horiz_arange <= horiz_right_bound, ones, zeros).to(device)
+        horiz_masks = horiz_masks.float().to(device)
 
-    vert_masks = torch.where(vert_top_bound <= vert_arange, ones, zeros).to(device) * torch.where(vert_arange <= vert_bottom_bound, ones, zeros).to(device)
-    vert_masks = vert_masks.to(device)
+        # compute a 'vertical masks' tensor of shape (batch_size, num_kept_boxes, max_height_px)
+        vert_arange = torch.arange(max_height_px).view(1, 1, -1)  # necessary for vectorized mask computation
+        vert_arange = vert_arange.float().to(device)
+        vert_top_bound = vert_top_bound.unsqueeze(-1).expand(vert_top_bound.shape[0], vert_top_bound.shape[1], max_height_px)
+        vert_bottom_bound = vert_bottom_bound.unsqueeze(-1).expand(vert_bottom_bound.shape[0], vert_bottom_bound.shape[1], max_height_px)
 
-    """
-    reshape masks to get ready for batched matrix multiply (this will result in the tensor we want
-    of shape (batch_size, num_kept_boxes, max_width_px, max_height_px)
-    """
-    vert_masks = vert_masks.unsqueeze(-1).permute(0, 1, 3, 2)
-    horiz_masks = horiz_masks.unsqueeze(-1)
+        ones = torch.ones((1, 1, 1)).to(device).expand(vert_top_bound.shape)
+        zeros = torch.zeros((1, 1, 1)).to(device).expand(vert_top_bound.shape)
 
-    # use batched matrix multiplication to compute masks
-    confidence_masks = torch.matmul(horiz_masks, vert_masks).unsqueeze(2).expand(batch_size, boxes.shape[1], nc, max_width_px, max_height_px)
-    confidence_masks = confidence_masks.to(device)
+        vert_masks = torch.where(vert_top_bound <= vert_arange, ones, zeros).to(device) * torch.where(vert_arange <= vert_bottom_bound, ones, zeros).to(device)
+        vert_masks = vert_masks.to(device)
 
-    # use 'expand' and 'unsqueeze' to avoid nasty broadcasting
-    confidence = confidence.unsqueeze(-1).unsqueeze(-1).expand(confidence_masks.shape)
+        """
+        reshape masks to get ready for batched matrix multiply (this will result in the tensor we want
+        of shape (batch_size, num_kept_boxes, max_width_px, max_height_px)
+        """
+        vert_masks = vert_masks.unsqueeze(-1).permute(0, 1, 3, 2)
+        horiz_masks = horiz_masks.unsqueeze(-1)
 
-    # compute per-box pixel values
-    per_box_output = confidence_masks * confidence
-    per_box_output = per_box_output.to(device)
+        # use batched matrix multiplication to compute masks
+        confidence_masks = torch.matmul(horiz_masks, vert_masks).unsqueeze(2).expand(1, boxes.shape[1], nc, max_width_px, max_height_px)
+        confidence_masks = confidence_masks.to(device)
 
-    # compute max among pixel values for each image in the batch, class, x position, and y position
-    output, _ = torch.max(per_box_output, dim=1)
-    output = output.to(device)
+        # use 'expand' and 'unsqueeze' to avoid nasty broadcasting
+        confidence = confidence.unsqueeze(-1).unsqueeze(-1).expand(confidence_masks.shape)
+
+        # compute per-box pixel values
+        per_box_output = confidence_masks * confidence
+        per_box_output = per_box_output.to(device)
+
+        # compute max among pixel values for each image in the batch, class, x position, and y position
+        output[image_idx, :, :, :], _ = torch.max(per_box_output, dim=1)
 
     return output
 
@@ -197,10 +201,10 @@ def topn_by_objectness(boxes: torch.Tensor, k: int, nc: int):
 
 def test_pixel_map():
     boxes = torch.rand(size=(2, 48, 7))*(2/3)
-    boxes[0, 0, :] = torch.Tensor([0.5, 0.5, 0.5, 0.5, 1, 1, 0])  # class 0 has a square in the center of its map
-    boxes[0, 1, :] = torch.Tensor([0.5, 0.5, 0.5, 0.5, 1, 0, 1])  # class 1 has a square in the center of its map
-    boxes[1, 2, :] = torch.Tensor([0.25, 0.25, 0.5, 0.5, 1, 0.7, 0])  # class 0 has a square in the upper-left of its map
-    boxes[1, 3, :] = torch.Tensor([0.75, 0.75, 0.5, 0.5, 1, 0, 0.8])  # class 1 has a square in the bottom-right of its map
+    boxes[0, 0, :] = torch.Tensor([0.49, 0.49, 0.5, 0.5, 1, 1, 0])  # class 0 has a square in the center of its map
+    boxes[0, 1, :] = torch.Tensor([0.49, 0.49, 0.5, 0.5, 1, 0, 1])  # class 1 has a square in the center of its map
+    boxes[1, 2, :] = torch.Tensor([0.24, 0.24, 0.5, 0.5, 1, 0.7, 0])  # class 0 has a square in the upper-left of its map
+    boxes[1, 3, :] = torch.Tensor([0.74, 0.74, 0.5, 0.5, 1, 0, 0.8])  # class 1 has a square in the bottom-right of its map
     outputs = predicted_bboxes_to_pixel_map(boxes, (8, 8))
     return outputs
 
