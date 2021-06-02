@@ -34,7 +34,12 @@ class ThresholdingMaxConfidenceClassChannelsCreator(ClassChannelsCreator.ClassCh
         max_height_px = img_shape[1]
 
         # Get indices into the box matrix where objectness score is greater than threshold
-        boxesIndicesObjectnessGreaterThanThreshold = boxes[:,:,4] >= self.threshold 
+        objectness = boxes[:,:,4]
+
+        # The objectness scores are really low. Therefore, you will have to pick from the top k values instead sadly.
+        # We will go with the top 0.003% which is about 50 bounding boxes.
+        numBoxesToPick = min(max(round(batch_size * 0.003), 50), num_boxes) # We should at least consider 50 boxes but not greater than num_boxes
+        _, boxesIndicesObjectnessGreaterThanThreshold = torch.topk(objectness, k=numBoxesToPick, dim=1, largest=True) 
 
         # Pixel bounds contains clamped pixel values where shape is (BatchSize, #Boxes, 7) where 7 is class_conf, objness, hleft, hright, vtop, vbottom, class_idx
         pixel_bounds = torch.zeros((boxes.shape[0], boxes.shape[1], 7)).to(boxes.device)
@@ -70,12 +75,13 @@ class ThresholdingMaxConfidenceClassChannelsCreator(ClassChannelsCreator.ClassCh
         output = torch.zeros((batch_size, numChannels, max_width_px, max_height_px)).to(boxes.device)
 
         numImagesInBatch = pixel_bounds.shape[0] 
-        numBoxes = pixel_bounds.shape[1]
         # Iterate over (#images in batch, #boxes) and updates the output. 
         countBoxesWhoseObjectnessIsGreaterThanThreshold: int = 0
         for imageIndex in range(numImagesInBatch):
-            for boxIndex in range(numBoxes):
+            for boxTopKIndex in range(numBoxesToPick):
+                boxIndex = boxesIndicesObjectnessGreaterThanThreshold[imageIndex, boxTopKIndex]
                 if boxesIndicesObjectnessGreaterThanThreshold[imageIndex, boxIndex] == False:
+                    logger.error("We should not have hit this condition")
                     continue
 
                 countBoxesWhoseObjectnessIsGreaterThanThreshold += 1
