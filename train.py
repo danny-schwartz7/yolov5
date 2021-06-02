@@ -34,7 +34,9 @@ from utils.loss import ComputeLoss
 from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
-from utils.feature_utils import predicted_bboxes_to_pixel_map
+from utils.ClassChannelsCreator import ClassChannelsCreator
+import utils.ClassChannelsCreatorFactory
+from utils.ThresholdingMaxConfidenceClassChannelsCreator import ThresholdingMaxConfidenceClassChannelsCreator
 
 
 MASTER_VAL_NAME = "master_val"
@@ -284,6 +286,9 @@ def train(hyp, opt, device, tb_writer=None):
     train_tags = ['train/box_loss', 'train/obj_loss', 'train/cls_loss']
     lr_tags = ['x/lr0', 'x/lr1', 'x/lr2']
 
+    # TODO: Move to main and get type of ClassChannelsCreator from command line argument
+    classChannelsCreator: ClassChannelsCreator = utils.ClassChannelsCreatorFactory.create_class_channels_creator("ThresholdingMaxConfidenceClassChannelsCreator")
+
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
                 f'Using {dataloader.num_workers} dataloader workers\n'
                 f'Logging results to {save_dir}\n'
@@ -335,7 +340,7 @@ def train(hyp, opt, device, tb_writer=None):
                 with torch.no_grad():
                     img_shape = (imgs.shape[2], imgs.shape[3])
                     boxes, _ = modal_stage_model.forward(imgs)
-                    pixel_map = predicted_bboxes_to_pixel_map(boxes, img_shape)
+                    pixel_map = classChannelsCreator.predicted_bboxes_to_pixel_map(boxes, img_shape)
                     imgs = torch.cat([imgs, pixel_map], dim=1)
 
 

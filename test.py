@@ -18,7 +18,9 @@ from utils.general import coco80_to_coco91_class, check_dataset, check_file, che
 from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import plot_images, output_to_target, plot_study_txt
 from utils.torch_utils import select_device, time_synchronized
-from utils.feature_utils import predicted_bboxes_to_pixel_map
+from utils.ClassChannelsCreator import ClassChannelsCreator
+import utils.ClassChannelsCreatorFactory
+from utils.ThresholdingMaxConfidenceClassChannelsCreator import ThresholdingMaxConfidenceClassChannelsCreator
 
 
 def test(data,
@@ -98,6 +100,10 @@ def test(data,
         dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, pad=0.5, rect=True,
                                        prefix=colorstr(f'{task}: '))[0]
 
+
+    # TODO: Move to main and get type of ClassChannelsCreator from command line argument
+    classChannelsCreator: ClassChannelsCreator = utils.ClassChannelsCreatorFactory.create_class_channels_creator("ThresholdingMaxConfidenceClassChannelsCreator")
+
     seen = 0
     confusion_matrix = ConfusionMatrix(nc=nc)
     names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
@@ -127,7 +133,7 @@ def test(data,
                     boxes, _ = modal_stage_model.forward(img_float)
                 else:
                     boxes, _ = modal_stage_model.forward(img)
-                pixel_map = predicted_bboxes_to_pixel_map(boxes, img_shape)
+                pixel_map = classChannelsCreator.predicted_bboxes_to_pixel_map(boxes, img_shape)
                 pixel_map = pixel_map.half() if half else pixel_map
                 img = torch.cat([img, pixel_map], dim=1)
 
