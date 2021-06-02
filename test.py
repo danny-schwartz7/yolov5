@@ -17,7 +17,7 @@ from utils.general import coco80_to_coco91_class, check_dataset, check_file, che
     box_iou, non_max_suppression, scale_coords, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr
 from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import plot_images, output_to_target, plot_study_txt
-from utils.torch_utils import select_device, time_synchronized
+from utils.torch_utils import select_device, time_synchronized, intersect_dicts
 from utils.feature_utils import predicted_bboxes_to_pixel_map
 
 
@@ -359,6 +359,9 @@ if __name__ == '__main__':
             modal_ckpt = torch.load(opt.modal_stage_model, map_location=device)
             nc = modal_ckpt['model'].yaml['nc']
             modal_stage_model = Model(modal_ckpt['model'].yaml, ch=3, nc=nc).to(device)
+            state_dict = modal_ckpt['model'].float().state_dict()
+            state_dict = intersect_dicts(state_dict, modal_stage_model.state_dict(), exclude=[])
+            modal_stage_model.load_state_dict(state_dict, strict=False)
             modal_stage_model.eval()
 
     if opt.task in ('train', 'val', 'test'):  # run normally

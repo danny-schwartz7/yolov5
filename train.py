@@ -89,6 +89,10 @@ def train(hyp, opt, device, tb_writer=None):
     if opt.modal_stage_model is not None and opt.modal_stage_model != "":
         modal_ckpt = torch.load(opt.modal_stage_model, map_location=device)
         modal_stage_model = Model(modal_ckpt['model'].yaml, ch=3, nc=nc).to(device)
+        state_dict = modal_ckpt['model'].float().state_dict()
+        state_dict = intersect_dicts(state_dict, modal_stage_model.state_dict(), exclude=[])
+        modal_stage_model.load_state_dict(state_dict, strict=False)
+        logger.info('Transferred %g/%g items from %s for modal stage model' % (len(state_dict), len(modal_stage_model.state_dict()), opt.modal_stage_model))
         modal_stage_model.eval()
 
     # Model
