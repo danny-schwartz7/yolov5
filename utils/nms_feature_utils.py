@@ -48,7 +48,7 @@ def nms_predicted_bboxes_to_pixel_map(boxes: List[torch.Tensor], img_shape: Tupl
         indexClass = imageBoxes[:, 5] # imageBoxes shape is x [0] y [1] x [2] y [3] conf [4] class [5]
         indexClass = indexClass.long().to(device)
         indexClass = 5 + indexClass # Because class scores for input start at 5 and our class numbers are zero indexed
-        input[0, :, indexClass] =  imageBoxes[:, 4] # imageBoxes shape is x [0] y [1] x [2] y [3] conf [4] class [5]
+        input[0, torch.arange(numBoxes), indexClass] =  imageBoxes[:, 4] # imageBoxes shape is x [0] y [1] x [2] y [3] conf [4] class [5]
 
         # Populate center X
         input[0, :, 0] = (imageBoxes[:, 0] + imageBoxes[:, 2]) / (2*max_width_px) # imageBoxes shape is x [0] y [1] x [2] y [3] conf [4] class [5]
