@@ -1,9 +1,11 @@
 import torch
 from typing import Tuple
 from typing import List
-import utils.feature_utils
+import feature_utils
 
 DEFAULT_BOX_LIMIT = 300
+DEFAULT_NUM_CHANNELS = 3
+
 def nms_predicted_bboxes_to_pixel_map(boxes: List[torch.Tensor], img_shape: Tuple[int, int],
                                   keep_top_n_boxes: int = DEFAULT_BOX_LIMIT) -> torch.Tensor:
     """
@@ -21,7 +23,8 @@ def nms_predicted_bboxes_to_pixel_map(boxes: List[torch.Tensor], img_shape: Tupl
     :return: A Tensor of pixel values between 0 and 1. Its shape will be [batch_size, nc, img_shape[0], img_shape[1]]
     """
 
-    numFeatures = self.numChannels + 5
+    numChannels = DEFAULT_NUM_CHANNELS # TODO: Change to class and get this value from constructor instead
+    numFeatures = numChannels + 5
 
     max_width_px = img_shape[0]
     max_height_px = img_shape[1]
@@ -30,7 +33,7 @@ def nms_predicted_bboxes_to_pixel_map(boxes: List[torch.Tensor], img_shape: Tupl
 
     numImages = len(boxes)
 
-    output = torch.zeros((numImages, self.numChannels, max_width_px, max_height_px)).to(device)
+    output = torch.zeros((numImages, numChannels, max_width_px, max_height_px)).to(device)
 
     for imageIndex in range(numImages):
         imageBoxes = boxes[imageIndex] 
@@ -43,6 +46,7 @@ def nms_predicted_bboxes_to_pixel_map(boxes: List[torch.Tensor], img_shape: Tupl
 
         # Index will need to be added by 5 as input's class scores start from column 5
         indexClass = imageBoxes[:, 5] # imageBoxes shape is x [0] y [1] x [2] y [3] conf [4] class [5]
+        indexClass = indexClass.long().to(device)
         indexClass = 5 + indexClass # Because class scores for input start at 5 and our class numbers are zero indexed
         input[0, :, indexClass] =  imageBoxes[:, 4] # imageBoxes shape is x [0] y [1] x [2] y [3] conf [4] class [5]
 
@@ -51,9 +55,9 @@ def nms_predicted_bboxes_to_pixel_map(boxes: List[torch.Tensor], img_shape: Tupl
         # Populate center Y
         input[0, :, 1] = (imageBoxes[:, 1] + imageBoxes[:, 3]) / (2*max_height_px) # imageBoxes shape is x [0] y [1] x [2] y [3] conf [4] class [5]
         # Populate width of bounding box 
-        input[0, :, 2] = (imageBoxes[:, 2] - imageBoxes[:, 0]) / (2*max_width_px)  # imageBoxes shape is x [0] y [1] x [2] y [3] conf [4] class [5]
+        input[0, :, 2] = (1 + imageBoxes[:, 2] - imageBoxes[:, 0]) / (max_width_px)  # imageBoxes shape is x [0] y [1] x [2] y [3] conf [4] class [5]
         # Populate height of bounding box 
-        input[0, :, 3] = (imageBoxes[:, 3] - imageBoxes[:, 1]) / (2*max_height_px) # imageBoxes shape is x [0] y [1] x [2] y [3] conf [4] class [5]
+        input[0, :, 3] = (1 + imageBoxes[:, 3] - imageBoxes[:, 1]) / (max_height_px) # imageBoxes shape is x [0] y [1] x [2] y [3] conf [4] class [5]
 
         # Get the result
         imageOutput = utils.feature_utils.predicted_bboxes_to_pixel_map(input, img_shape, keep_top_n_boxes)
