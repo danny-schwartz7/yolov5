@@ -38,6 +38,10 @@ def nms_predicted_bboxes_to_pixel_map(boxes: List[torch.Tensor], img_shape: Tupl
     for imageIndex in range(numImages):
         imageBoxes = boxes[imageIndex] 
         numBoxes = imageBoxes.shape[0]
+
+        if numBoxes == 0:
+            continue
+
         # Create a tensor of shape (1, something)
         input =  torch.zeros((1, numBoxes, numFeatures)).to(device)
 
