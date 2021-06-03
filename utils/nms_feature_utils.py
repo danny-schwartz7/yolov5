@@ -61,7 +61,7 @@ def nms_predicted_bboxes_to_pixel_map(boxes: List[torch.Tensor], img_shape: Tupl
 
         # Get the result
         imageOutput = utils.feature_utils.predicted_bboxes_to_pixel_map(input, img_shape, keep_top_n_boxes)
-        output[0] = imageOutput[0]
+        output[imageIndex] = imageOutput[0]
 
     return output
 
